@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+annotator/__init__.py
+annotator/config.py
+annotator/drawing.py
+annotator/mouse.py
+annotator/player.py
+annotator/storage.py
+behavior_annotator.egg-info/PKG-INFO
+behavior_annotator.egg-info/SOURCES.txt
+behavior_annotator.egg-info/dependency_links.txt
+behavior_annotator.egg-info/entry_points.txt
+behavior_annotator.egg-info/requires.txt
+behavior_annotator.egg-info/top_level.txt
