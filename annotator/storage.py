@@ -5,6 +5,7 @@ CSV persistence and video-file selection dialog.
 from __future__ import annotations
 
 import os
+import re
 import pandas as pd
 
 
