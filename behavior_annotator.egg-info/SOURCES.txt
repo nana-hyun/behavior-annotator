@@ -1,11 +1,14 @@
 README.md
 pyproject.toml
 annotator/__init__.py
+annotator/cli sync.py
+annotator/cli.py
 annotator/config.py
 annotator/drawing.py
 annotator/mouse.py
 annotator/player.py
 annotator/storage.py
+annotator/sync.py
 behavior_annotator.egg-info/PKG-INFO
 behavior_annotator.egg-info/SOURCES.txt
 behavior_annotator.egg-info/dependency_links.txt

@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+Claude outputs/
+
+# per-video files written next to the videos
+*_annotations.csv
+*_sync.json
+*_align.json

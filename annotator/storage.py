@@ -13,6 +13,8 @@ CSV_COLUMNS = [
     'behavior', 'start_frame', 'start_sec',
     'end_frame', 'end_sec', 'duration_sec',
 ]
+# Extra reference columns written only in dual-view mode (top-video frame indices).
+EXTRA_COLUMNS = ['start_top_frame', 'end_top_frame']
 
 _VIDEO_FILETYPES = [("Video files", "*.mp4 *.avi *.mov *.mkv *.MP4")]
 
@@ -33,7 +35,7 @@ def select_videos() -> tuple[str | None, str | None]:
     root.withdraw()
 
     path1 = filedialog.askopenfilename(
-        title="Select primary video (top view, or only video)",
+        title="Select a video (top or front — order doesn't matter)",
         filetypes=_VIDEO_FILETYPES,
     )
     if not path1:
@@ -42,12 +44,12 @@ def select_videos() -> tuple[str | None, str | None]:
 
     add_second = messagebox.askyesno(
         "Second camera angle",
-        "Add a second camera angle (e.g. front view)?\n\nClick No to use a single video.",
+        "Add the other camera angle (top or front, any order)?\n\nClick No to use a single video.",
     )
     path2 = None
     if add_second:
         path2 = filedialog.askopenfilename(
-            title="Select second video (front view)",
+            title="Select the other camera video",
             filetypes=_VIDEO_FILETYPES,
         )
 
@@ -55,22 +57,52 @@ def select_videos() -> tuple[str | None, str | None]:
     return path1, path2
 
 
+def _view_of(path: str) -> str | None:
+    """'top' / 'front' if the file name says so, else None."""
+    name = os.path.splitext(os.path.basename(path))[0].lower()
+    tokens = set(re.split(r"[^a-z0-9]+", name))
+    has_top, has_front = "top" in tokens, "front" in tokens
+    if has_top == has_front:                     # neither or both as words
+        has_top, has_front = "top" in name, "front" in name
+    if has_top and not has_front:
+        return "top"
+    if has_front and not has_top:
+        return "front"
+    return None
+
+
+def order_top_front(a: str, b: str) -> tuple[str, str]:
+    """
+    Return (top_path, front_path) whatever order the two files were picked in,
+    using "top" / "front" in the file names.  If the names don't tell, the
+    given order is kept (a = top, b = front) and a warning is printed.
+    """
+    va, vb = _view_of(a), _view_of(b)
+    if va == "front" or vb == "top":
+        if va != vb:
+            print("  [player] Picked in front→top order — swapped automatically.")
+            return b, a
+    if not (va == "top" or vb == "front"):
+        print("  [player] Warning: can't tell top/front from the file names — "
+              f"using {os.path.basename(a)} as TOP and {os.path.basename(b)} as FRONT.")
+    return a, b
+
+
 def csv_path_for(video_path: str) -> str:
     """
     Return the annotation CSV path for *video_path*.
- 
-    Strips ``_top`` or ``_front`` from the filename stem so that both camera
-    angles share a single CSV.
- 
+
+    The CSV is named after the **master video** (the front view in dual mode,
+    the only video in single mode), the one whose frames are counted.
+
     Example
     -------
-    ``Aggw3_ctrl01_top_2026-10-05T15_12_07.mp4``
-    → ``Aggw3_ctrl01_2026-10-05T15_12_07_annotations.csv``
+    ``Aggw3_ctrl01_front_2026-10-05T15_12_07.avi``
+    → ``Aggw3_ctrl01_front_2026-10-05T15_12_07_annotations.csv``
     """
     directory = os.path.dirname(video_path)
     stem      = os.path.splitext(os.path.basename(video_path))[0]
-    stem_clean = re.sub(r'_(top|front)', '', stem, flags=re.IGNORECASE)
-    return os.path.join(directory, stem_clean + "_annotations.csv")
+    return os.path.join(directory, stem + "_annotations.csv")
 
 
 def load_csv(path: str) -> list[dict]:
@@ -95,7 +127,9 @@ def load_csv(path: str) -> list[dict]:
 def save_csv(path: str, annotations: list[dict]) -> None:
     """Write *annotations* to *path*, or write an empty CSV when the list is empty."""
     if annotations:
-        df = pd.DataFrame(annotations, columns=CSV_COLUMNS)
+        cols = CSV_COLUMNS + [c for c in EXTRA_COLUMNS
+                              if any(c in a for a in annotations)]
+        df = pd.DataFrame(annotations, columns=cols)
         df.to_csv(path, index=False)
         print(f"  [storage] Saved {len(df)} rows → {path}")
     else:

@@ -1,2 +1,3 @@
 [console_scripts]
-annotate = annotate:main
+annotate = annotator.cli:main
+sync-videos = annotator.cli_sync:main

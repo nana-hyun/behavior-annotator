@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from .config import BEHAVIORS, COLORS, BAR_H, MARGIN
+from .config import BEHAVIORS, COLORS, BAR_H, MARGIN, TOP_PAD
 from .mouse import bar_top, frame_to_x, x_to_frame
 
 
@@ -50,6 +50,39 @@ def get_font(size: int) -> ImageFont.FreeTypeFont:
 
 # ── Text helper ───────────────────────────────────────────────────────────────
 
+_TEXT_CACHE: dict[tuple, tuple] = {}
+
+
+def _text_masks(text: str, size: int, bold: bool):
+    """Rendered glyph masks for *text* (cached): (fill, outline, dx, dy)."""
+    key = (text, size, bold)
+    hit = _TEXT_CACHE.get(key)
+    if hit is not None:
+        return hit
+    font = get_font(size)
+    try:
+        l, t, r, b = font.getbbox(text)
+    except AttributeError:                      # very old Pillow
+        l, t, (r, b) = 0, 0, font.getsize(text)
+    pad = 2
+    w, h = max(1, r - l + 2 * pad), max(1, b - t + 2 * pad)
+    ox, oy = pad - l, pad - t
+    fill = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(fill).text((ox, oy), text, font=font, fill=255)
+    outline = None
+    if bold:
+        outline = Image.new("L", (w, h), 0)
+        d = ImageDraw.Draw(outline)
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            d.text((ox + dx, oy + dy), text, font=font, fill=255)
+        outline = np.asarray(outline, np.float32)[..., None] / 255.0
+    res = (np.asarray(fill, np.float32)[..., None] / 255.0, outline, l - pad, t - pad)
+    if len(_TEXT_CACHE) > 1024:
+        _TEXT_CACHE.clear()
+    _TEXT_CACHE[key] = res
+    return res
+
+
 def put_text(
     img_bgr: np.ndarray,
     text: str,
@@ -58,18 +91,43 @@ def put_text(
     color: tuple[int, int, int] = (255, 255, 255),
     bold: bool = False,
 ) -> None:
-    """Render *text* onto a BGR numpy array using PIL (supports system fonts)."""
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    pil_img = Image.fromarray(img_rgb)
-    draw    = ImageDraw.Draw(pil_img)
-    font    = get_font(size)
-    x, y    = xy
-    r, g, b = color
-    if bold:
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0))
-    draw.text((x, y), text, font=font, fill=(r, g, b))
-    img_bgr[:] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    """
+    Render *text* (colour given as RGB) onto a BGR image, in place.
+
+    Glyphs are rendered once by PIL and cached as masks; each frame only blends
+    the small rectangle under the text.  (Converting the whole frame to PIL for
+    every label used to make playback several times slower than real time.)
+    """
+    fill, outline, dx, dy = _text_masks(text, size, bold)
+    H, W = img_bgr.shape[:2]
+    x0, y0 = xy[0] + dx, xy[1] + dy
+    h, w = fill.shape[:2]
+    # clip to image
+    cx0, cy0 = max(0, x0), max(0, y0)
+    cx1, cy1 = min(W, x0 + w), min(H, y0 + h)
+    if cx1 <= cx0 or cy1 <= cy0:
+        return
+    sl = (slice(cy0 - y0, cy1 - y0), slice(cx0 - x0, cx1 - x0))
+    roi = img_bgr[cy0:cy1, cx0:cx1].astype(np.float32)
+    if outline is not None:
+        roi *= 1.0 - outline[sl]
+    f = fill[sl]
+    bgr = np.array(color[::-1], np.float32)
+    roi = roi * (1.0 - f) + bgr * f
+    img_bgr[cy0:cy1, cx0:cx1] = roi.astype(np.uint8)
+
+
+def shade(img: np.ndarray, x0: int, y0: int, x1: int, y1: int,
+          color: tuple[int, int, int], alpha: float) -> None:
+    """Blend a solid *color* (BGR) into a rectangle — touches only that region."""
+    H, W = img.shape[:2]
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(W, x1), min(H, y1)
+    if x1 <= x0 or y1 <= y0:
+        return
+    roi = img[y0:y1, x0:x1]
+    solid = np.empty_like(roi)
+    solid[:] = color
+    img[y0:y1, x0:x1] = cv2.addWeighted(solid, alpha, roi, 1 - alpha, 0)
 
 
 # ── Frame composition ─────────────────────────────────────────────────────────
@@ -80,27 +138,42 @@ def compose_display(
     disp_w: int,
     disp_h: int,
     dual: bool,
+    labels: tuple[str, str] = ("TOP", "FRONT"),
 ) -> np.ndarray:
     """
     Compose the final display canvas.
 
+    The video is placed in a dedicated middle strip (starting at TOP_PAD),
+    leaving a black band at the top (top info bar) and bottom (timeline +
+    shortcut bar) so HUD elements never overlap the video content.
+
     In dual mode the two frames are placed side by side with camera labels
     ("TOP" / "FRONT") and a thin divider line.
     """
+    vid_h = frame1.shape[0]
+
+    # Black canvas — HUD areas start transparent/black, overlays are drawn later
+    canvas = np.zeros((disp_h, disp_w, 3), dtype=np.uint8)
+
     if not dual or frame2 is None:
-        return frame1.copy()
+        canvas[TOP_PAD:TOP_PAD + vid_h, :] = frame1
+    else:
+        video_strip = np.hstack([frame1, frame2])
+        canvas[TOP_PAD:TOP_PAD + vid_h, :] = video_strip
 
-    canvas = np.hstack([frame1, frame2])
+        half = disp_w // 2
+        # Vertical divider — only through the video area
+        cv2.line(canvas, (half, TOP_PAD), (half, TOP_PAD + vid_h), (60, 60, 60), 1)
 
-    half = disp_w // 2
-    for x_off, label in [(8, "TOP"), (half + 8, "FRONT")]:
-        ov = canvas.copy()
-        tw = len(label) * 16 + 16
-        cv2.rectangle(ov, (x_off - 4, 4), (x_off + tw, 32), (10, 10, 10), -1)
-        cv2.addWeighted(ov, 0.55, canvas, 0.45, 0, canvas)
-        put_text(canvas, label, (x_off + 4, 8), size=20, color=(200, 200, 200), bold=True)
+        # Camera labels ("TOP" / "FRONT") drawn inside the video area
+        label_y = TOP_PAD + 4
+        for x_off, label in [(8, labels[0]), (half + 8, labels[1])]:
+            tw = int(get_font(20).getlength(label)) + 12
+            shade(canvas, x_off - 4, label_y, x_off + tw, label_y + 29,
+                  (10, 10, 10), 0.55)
+            put_text(canvas, label, (x_off + 4, label_y + 4),
+                     size=20, color=(200, 200, 200), bold=True)
 
-    cv2.line(canvas, (half, 0), (half, disp_h), (60, 60, 60), 1)
     return canvas
 
 
@@ -119,9 +192,7 @@ def draw_timeline(
     top  = bar_top(h)
 
     # Dark background strip
-    ov = display.copy()
-    cv2.rectangle(ov, (0, top - 2), (w, top + BAR_H + 2), (10, 10, 10), -1)
-    cv2.addWeighted(ov, 0.72, display, 0.28, 0, display)
+    shade(display, 0, top - 2, w, top + BAR_H + 3, (10, 10, 10), 0.72)
 
     # Bar background (highlights on hover / drag)
     bar_bg = (65, 65, 65) if (mouse_state["in_bar"] or mouse_state["dragging"]) else (45, 45, 45)
@@ -142,9 +213,7 @@ def draw_timeline(
         x1 = frame_to_x(start_f,        w, total_frames)
         x2 = max(frame_to_x(current_frame, w, total_frames), x1 + 3)
         blink = 0.5 + 0.5 * abs(((current_frame // 8) % 2) * 2 - 1)
-        ov2 = display.copy()
-        cv2.rectangle(ov2, (x1, top + 1), (x2, top + BAR_H - 1), col_cv, -1)
-        cv2.addWeighted(ov2, blink, display, 1 - blink, 0, display)
+        shade(display, x1, top + 1, x2 + 1, top + BAR_H, col_cv, blink)
 
     # Hover ghost playhead + time tooltip
     if mouse_state["in_bar"] and not mouse_state["dragging"]:
@@ -192,9 +261,7 @@ def draw_overlay(
         return round(frame / fps, 3)
 
     # ── Top bar ───────────────────────────────────────────────────────────────
-    ov = display.copy()
-    cv2.rectangle(ov, (0, 0), (w, 56), (15, 15, 15), -1)
-    cv2.addWeighted(ov, 0.7, display, 0.3, 0, display)
+    shade(display, 0, 0, w, 57, (15, 15, 15), 0.7)
 
     put_text(display,
              f"Frame {current_frame} / {total_frames}     Time  {_sec(current_frame):.2f} s",
@@ -228,9 +295,7 @@ def draw_overlay(
     draw_timeline(display, current_frame, total_frames, annotations, active, mouse_state)
 
     # ── Bottom bar ────────────────────────────────────────────────────────────
-    ov4 = display.copy()
-    cv2.rectangle(ov4, (0, h - 60), (w, h), (15, 15, 15), -1)
-    cv2.addWeighted(ov4, 0.72, display, 0.28, 0, display)
+    shade(display, 0, h - 60, w, h, (15, 15, 15), 0.72)
 
     guide = "   ".join(f"[{chr(k)}] {v}" for k, v in BEHAVIORS.items())
     put_text(display, guide, (12, h - 54), size=18, color=(200, 200, 200))

@@ -15,7 +15,8 @@ dependencies = [
 ]
 
 [project.scripts]
-annotate = "annotator.cli:main"
+annotate    = "annotator.cli:main"
+sync-videos = "annotator.cli_sync:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

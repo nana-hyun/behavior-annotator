@@ -31,6 +31,10 @@ KEY_LABEL: dict[str, str] = {v: chr(k) for k, v in BEHAVIORS.items()}
 SINGLE_DISP_W = 1280   # window width in single-video mode
 DUAL_PER_W    = 800    # per-panel width in dual-video mode  (total = 1600)
 
+# Vertical padding so HUD bars never overlap the video
+TOP_PAD = 56   # reserved above the video (top info bar)
+BOT_PAD = 120  # reserved below the video (timeline + legend + shortcut bar)
+
 # Timeline bar
 BAR_H  = 18   # height of the timeline bar (px)
 MARGIN = 6    # left/right margin of the bar (px)
