@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-annotate = "annotate:main"
+annotate = "annotator.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
